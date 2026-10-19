@@ -168,10 +168,11 @@ const T = 48, COLS = 40, ROWS = 28, MID = 14;           // tiles
 const KEY = 'kapas-zoo-v1';
 const cv = document.getElementById('game'), ctx = cv.getContext('2d');
 const $ = id => document.getElementById(id);
-let W = 0, H = 0, DPR = 1;
+let W = 0, H = 0, DPR = 1, Z = 1, VW = 0, VH = 0, freeCam = false, drag = null;
 function resize(){
   DPR = Math.min(2, window.devicePixelRatio || 1);
   W = innerWidth; H = innerHeight;
+  Z = Math.max(.6, Math.min(1, Math.min(W/760, H/520))); VW = W/Z; VH = H/Z;   // zooma ut på små skärmar
   cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
   cv.style.width = W + 'px'; cv.style.height = H + 'px';
   if(typeof setTopH === 'function') setTopH();
@@ -726,8 +727,8 @@ function drawCoin(c, co){
 }
 
 function render(){
-  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  ctx.fillStyle = '#2f6b2c'; ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(DPR*Z, 0, 0, DPR*Z, 0, 0);
+  ctx.fillStyle = '#2f6b2c'; ctx.fillRect(0, 0, VW, VH);
   ctx.save();
   ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
   ctx.drawImage(bg, 0, 0);
@@ -802,7 +803,7 @@ function render(){
 }
 function hoverTile(){
   if(pending) return {hx:pending.x, hy:pending.y};
-  return {hx:Math.floor((mouse.sx + Math.round(cam.x))/T), hy:Math.floor((mouse.sy + Math.round(cam.y))/T)};
+  return {hx:Math.floor((mouse.sx/Z + Math.round(cam.x))/T), hy:Math.floor((mouse.sy/Z + Math.round(cam.y))/T)};
 }
 
 /* ---------- väder / stämning ---------- */
@@ -849,7 +850,7 @@ function drawAmb(){
 function drawArrows(){
   for(const it of S.items) for(const a of it.animals){
     if(!a.loose) continue;
-    const sx = a.x - Math.round(cam.x), sy = a.y - Math.round(cam.y) - 20;
+    const sx = (a.x - Math.round(cam.x))*Z, sy = (a.y - Math.round(cam.y) - 20)*Z;
     if(sx > 30 && sx < W-30 && sy > 90 && sy < H-30) continue;
     const ang = Math.atan2(sy - H/2, sx - W/2), px = clamp(sx, 44, W-44), py = clamp(sy, 120, H-130);
     ctx.save(); ctx.translate(px, py);
@@ -1221,9 +1222,14 @@ function update(dt){
   }
   // kamera
   const wW = COLS*T, wH = ROWS*T;
-  const tx = W >= wW ? (wW - W)/2 : clamp(P.x - W/2, 0, wW - W);
-  const ty = H >= wH ? (wH - H)/2 : clamp(P.y - H/2 + 20, 0, wH - H);
-  cam.x += (tx - cam.x) * Math.min(1, dt*8); cam.y += (ty - cam.y) * Math.min(1, dt*8);
+  if(P.moving || !build) freeCam = false;
+  const cx0 = VW >= wW ? (wW - VW)/2 : 0, cx1 = VW >= wW ? cx0 : wW - VW;
+  const cy0 = VH >= wH ? (wH - VH)/2 : 0, cy1 = VH >= wH ? cy0 : wH - VH;
+  if(freeCam){ cam.x = clamp(cam.x, cx0, cx1); cam.y = clamp(cam.y, cy0, cy1); }
+  else {
+    const tx = clamp(P.x - VW/2, cx0, cx1), ty = clamp(P.y - VH/2 + 20, cy0, cy1);
+    cam.x += (tx - cam.x) * Math.min(1, dt*8); cam.y += (ty - cam.y) * Math.min(1, dt*8);
+  }
   updateAmb(dt);
   updateKapa(dt);
   // sparning
@@ -1434,11 +1440,30 @@ $('upBtn').addEventListener('click', openUpgrades);
 $('menuBtn').addEventListener('click', openMenu);
 $('muteBtn').addEventListener('click', () => { muted = !muted; $('muteBtn').textContent = muted ? '🔇' : '🔊'; });
 
-function worldPos(e){ return {x:e.clientX + Math.round(cam.x), y:e.clientY + Math.round(cam.y)}; }
-cv.addEventListener('pointermove', e => { mouse.sx = e.clientX; mouse.sy = e.clientY; });
+function worldPos(e){ return {x:e.clientX/Z + Math.round(cam.x), y:e.clientY/Z + Math.round(cam.y)}; }
+cv.addEventListener('pointermove', e => {
+  mouse.sx = e.clientX; mouse.sy = e.clientY;
+  if(drag && drag.id === e.pointerId){
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if(!drag.moved && Math.hypot(dx, dy) > 12) drag.moved = true;
+    if(drag.moved && build){ cam.x = drag.cx - dx/Z; cam.y = drag.cy - dy/Z; freeCam = true; pending = null; }   // dra för att flytta kartan i byggläge
+  }
+});
+const endDrag = e => {
+  if(!drag || drag.id !== e.pointerId) return;
+  const d = drag; drag = null;
+  if(!d.moved && e.type === 'pointerup') canvasClick(d.e);
+};
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
 cv.addEventListener('contextmenu', e => { e.preventDefault(); if(tool){ tool = null; refreshUI(); } else if(build) setBuild(false); });
 cv.addEventListener('pointerdown', e => {
   if(e.button === 2 || panelOpen) return;
+  mouse.sx = e.clientX; mouse.sy = e.clientY;
+  if(e.pointerType === 'mouse'){ canvasClick(e); return; }
+  drag = {id:e.pointerId, x:e.clientX, y:e.clientY, cx:cam.x, cy:cam.y, moved:false, e:{clientX:e.clientX, clientY:e.clientY, pointerType:e.pointerType, button:0}};
+});
+function canvasClick(e){
+  if(panelOpen) return;
   mouse.sx = e.clientX; mouse.sy = e.clientY;
   const w = worldPos(e), tx = Math.floor(w.x/T), ty = Math.floor(w.y/T);
   if(build && tool){
@@ -1461,7 +1486,7 @@ cv.addEventListener('pointerdown', e => {
   const it = occ[ty] && occ[ty][tx];
   if(it && it.kind === 'encl') openEncl(it);
   else if(it && it.kind === 'storage') { if(nearStorage()) doE(); else toast('Gå närmare förrådet!'); }
-});
+}
 
 /* ---------- huvudloop ---------- */
 let last = performance.now(), uiAcc = 0;
